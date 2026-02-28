@@ -33,6 +33,20 @@ export class SyncService {
     try {
       for (const allianceId of this.config.gge.syncAllianceIds) {
         const alliance = await this.ggeClient.getAllianceById(allianceId);
+        const allianceName = alliance.alliance_name ?? `Alliance ${allianceId}`;
+
+        await this.pool.query(
+          `
+          INSERT INTO alliances (id, name)
+          VALUES ($1, $2)
+          ON CONFLICT (id)
+          DO UPDATE SET
+            name = EXCLUDED.name,
+            updated_at = NOW()
+          `,
+          [allianceId, allianceName]
+        );
+
         processedPlayers += alliance.players.length;
 
         for (const player of alliance.players) {

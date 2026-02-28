@@ -161,7 +161,7 @@ function buildVisitorRow(ownerDiscordUserId: string) {
     new ButtonBuilder()
       .setCustomId(`${VERIFY_VISITOR_PREFIX}${ownerDiscordUserId}_go`)
       .setLabel("Just Visiting, Not Joining Alliance")
-      .setStyle(ButtonStyle.Secondary)
+      .setStyle(ButtonStyle.Primary)
   );
 }
 
@@ -185,22 +185,19 @@ function getRankLabel(rankCode?: number) {
 function buildVerificationContent(allianceId?: number, rankCode?: number, page = 0, playersCount = 0) {
   const allianceLabel = getAllianceLabel(allianceId);
   const rankLabel = getRankLabel(rankCode);
-  const step = allianceId === undefined ? 1 : rankCode === undefined ? 2 : 3;
-  const pageLabel = step === 3 ? `\n- Page: ${page + 1}` : "";
-  const playerLabel = step === 3 ? `\n- Players on page: ${playersCount}` : "";
+  const status =
+    allianceLabel && rankLabel
+      ? `\n\nSelected: ${allianceLabel} • ${rankLabel}`
+      : allianceLabel
+        ? `\n\nSelected alliance: ${allianceLabel}`
+        : "";
+  const pageNote = allianceLabel && rankLabel && playersCount > 0 ? `\nPlayers shown: ${playersCount}` : "";
 
   return (
-    `Verification\n` +
-    `-# Step ${step}/3\n\n` +
-    `1) Choose alliance (dropdown)\n` +
-    `2) Choose rank (dropdown)\n` +
-    `3) Choose your player (dropdown)\n\n` +
-    `Current selection:\n` +
-    `- Alliance: ${allianceLabel ?? "Not selected"}\n` +
-    `- Rank: ${rankLabel ?? "Not selected"}` +
-    pageLabel +
-    playerLabel +
-    `\n\n-# Only you can use these controls in this thread.`
+    `Hey there, friend. Let's get you ID'd and on your way.\n` +
+    `Select your alliance below then your rank and player.${status}${pageNote}\n` +
+    `\n` +
+    `Leadership will be by shortly to verify.`
   );
 }
 
