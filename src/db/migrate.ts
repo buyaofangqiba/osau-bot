@@ -2,11 +2,18 @@ import "dotenv/config";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { loadConfig } from "../config.js";
+import { z } from "zod";
 import { createDbPool } from "./pool.js";
 
 async function run() {
-  const config = loadConfig();
+  const migrationEnv = z
+    .object({
+      DATABASE_URL: z.string().min(1)
+    })
+    .parse(process.env);
+  const config = {
+    databaseUrl: migrationEnv.DATABASE_URL
+  };
   const pool = createDbPool(config);
 
   try {

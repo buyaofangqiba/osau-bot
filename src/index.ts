@@ -16,6 +16,15 @@ async function main() {
   const dbPool = createDbPool(config);
   const ggeClient = new GgeClient(config.gge);
 
+  const schemaCheck = await dbPool.query<{ exists: string | null }>(
+    `SELECT to_regclass('public.discord_links') AS "exists"`
+  );
+  if (!schemaCheck.rows[0]?.exists) {
+    throw new Error(
+      "Database schema is missing. Run migrations first (`npm run migrate`) before starting the bot."
+    );
+  }
+
   const linkService = new LinkService(dbPool, logger);
   const verificationService = new VerificationService(dbPool, logger);
   let roleService!: DiscordRoleService;

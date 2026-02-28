@@ -53,10 +53,11 @@ Confirmed mapping:
 2. Bot creates one private verification thread for unlinked users.
 3. Bot shows in-thread verification controls for currently unlinked players from tracked alliances.
    UX detail:
-   - Step 1 buttons: choose alliance (`Dark Warriors`, `La Muerte`, `Just Visiting`).
+   - Step 1 dropdown: choose alliance (`Dark Warriors`, `La Muerte`).
    - Step 2 dropdown: choose alliance rank bucket.
    - Step 3 dropdown: choose player from that alliance+rank bucket, sorted A-Z by display name.
    - Member list pagination uses `Prev`/`Next` buttons.
+   - `Just Visiting, Not Joining Alliance` is a separate button at the bottom of the control set.
    - No user-facing slash-command fast path in v1; verification is thread-component driven.
 4. User submits a claim.
 5. Bot posts approval request in leadership channel (buttons: Approve / Deny).

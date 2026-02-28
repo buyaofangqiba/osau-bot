@@ -17,7 +17,7 @@ import {
 import type { AppConfig } from "../config.js";
 import { ALLIANCE_RANKS } from "../constants/ranks.js";
 import type { AppLogger } from "../logger.js";
-import type { ClaimablePlayer, ClaimSubmission } from "../services/verificationService.js";
+import type { ClaimSubmission, ClaimablePlayer } from "../services/verificationService.js";
 import { COMMAND_DEFINITIONS } from "./commands.js";
 
 export interface DiscordHandlers {
@@ -40,38 +40,128 @@ const VERIFY_ALLIANCE_PREFIX = "verify_alliance_";
 const VERIFY_RANK_PREFIX = "verify_rank_";
 const VERIFY_MEMBER_PREFIX = "verify_member_";
 const VERIFY_PAGE_PREFIX = "verify_page_";
-const VERIFY_RESET_ID = "verify_reset";
+const VERIFY_VISITOR_PREFIX = "verify_visitor_";
 const LEAD_CLAIM_APPROVE_PREFIX = "lead_claim_approve_";
 const LEAD_CLAIM_DENY_PREFIX = "lead_claim_deny_";
 
-function parseVerificationOwnerIdFromThreadName(name: string): string | null {
-  const parts = name.split("-");
-  const maybeUserId = parts[parts.length - 1] ?? "";
-  if (/^\d{16,22}$/.test(maybeUserId)) {
-    return maybeUserId;
+function toSafeUsername(username: string): string {
+  return username.toLowerCase().replace(/[^a-z0-9_-]/g, "-").replace(/-+/g, "-").slice(0, 80) || "member";
+}
+
+function buildVerificationThreadName(username: string): string {
+  return `verify-${toSafeUsername(username)}`;
+}
+
+function parseOwnedCustomId(prefix: string, customId: string): { ownerDiscordUserId: string; rest: string } | null {
+  if (!customId.startsWith(prefix)) {
+    return null;
   }
-  return null;
+  const body = customId.slice(prefix.length);
+  const sepIndex = body.indexOf("_");
+  if (sepIndex === -1) {
+    return null;
+  }
+  return {
+    ownerDiscordUserId: body.slice(0, sepIndex),
+    rest: body.slice(sepIndex + 1)
+  };
 }
 
-function isVerificationThreadForUser(memberId: string, channelName: string): boolean {
-  const ownerId = parseVerificationOwnerIdFromThreadName(channelName);
-  return ownerId === memberId;
+function buildAllianceRow(ownerDiscordUserId: string, selectedAllianceId?: number) {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`${VERIFY_ALLIANCE_PREFIX}${ownerDiscordUserId}_select`)
+    .setPlaceholder("Select alliance")
+    .addOptions(
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Dark Warriors")
+        .setValue("530061")
+        .setDefault(selectedAllianceId === 530061),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("La Muerte")
+        .setValue("10061")
+        .setDefault(selectedAllianceId === 10061)
+    );
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
 }
 
-function buildAllianceRow(selectedAllianceId?: number) {
+function buildRankRow(ownerDiscordUserId: string, allianceId?: number, selectedRankCode?: number) {
+  const options = Object.entries(ALLIANCE_RANKS)
+    .map(([code, name]) => ({ code: Number(code), name }))
+    .sort((a, b) => a.code - b.code)
+    .map((entry) =>
+      new StringSelectMenuOptionBuilder()
+        .setLabel(entry.name)
+        .setValue(String(entry.code))
+        .setDefault(selectedRankCode === entry.code)
+    );
+
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`${VERIFY_RANK_PREFIX}${ownerDiscordUserId}_${allianceId ?? 0}`)
+    .setPlaceholder(allianceId ? "Select rank" : "Select alliance first")
+    .setDisabled(!allianceId)
+    .addOptions(options);
+
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+}
+
+function buildMemberRow(
+  ownerDiscordUserId: string,
+  allianceId?: number,
+  rankCode?: number,
+  page = 0,
+  players: ClaimablePlayer[] = []
+) {
+  const hasContext = allianceId !== undefined && rankCode !== undefined;
+  const hasPlayers = players.length > 0;
+  const select = new StringSelectMenuBuilder()
+    .setCustomId(`${VERIFY_MEMBER_PREFIX}${ownerDiscordUserId}_${allianceId ?? 0}_${rankCode ?? -1}_${page}`)
+    .setPlaceholder(
+      !hasContext
+        ? "Select alliance and rank first"
+        : hasPlayers
+          ? "Select your player"
+          : "No unlinked players found for this rank"
+    )
+    .setDisabled(!hasContext || !hasPlayers)
+    .addOptions(
+      hasPlayers
+        ? players.map((player) =>
+            new StringSelectMenuOptionBuilder().setLabel(player.playerName).setValue(String(player.playerId))
+          )
+        : [new StringSelectMenuOptionBuilder().setLabel("No players available").setValue("none")]
+    );
+
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+}
+
+function buildPagingRow(
+  ownerDiscordUserId: string,
+  allianceId?: number,
+  rankCode?: number,
+  page = 0,
+  hasNextPage = false
+) {
+  const hasContext = allianceId !== undefined && rankCode !== undefined;
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(`${VERIFY_ALLIANCE_PREFIX}530061`)
-      .setLabel("Dark Warriors")
-      .setStyle(selectedAllianceId === 530061 ? ButtonStyle.Primary : ButtonStyle.Secondary),
+      .setCustomId(`${VERIFY_PAGE_PREFIX}${ownerDiscordUserId}_prev_${allianceId ?? 0}_${rankCode ?? -1}_${page}`)
+      .setLabel("Prev")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(!hasContext || page <= 0),
     new ButtonBuilder()
-      .setCustomId(`${VERIFY_ALLIANCE_PREFIX}10061`)
-      .setLabel("La Muerte")
-      .setStyle(selectedAllianceId === 10061 ? ButtonStyle.Primary : ButtonStyle.Secondary),
+      .setCustomId(`${VERIFY_PAGE_PREFIX}${ownerDiscordUserId}_next_${allianceId ?? 0}_${rankCode ?? -1}_${page}`)
+      .setLabel("Next")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(!hasContext || !hasNextPage)
+  );
+}
+
+function buildVisitorRow(ownerDiscordUserId: string) {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(`${VERIFY_ALLIANCE_PREFIX}visitor`)
-      .setLabel("Just Visiting")
-      .setStyle(ButtonStyle.Danger)
+      .setCustomId(`${VERIFY_VISITOR_PREFIX}${ownerDiscordUserId}_go`)
+      .setLabel("Just Visiting, Not Joining Alliance")
+      .setStyle(ButtonStyle.Secondary)
   );
 }
 
@@ -92,91 +182,7 @@ function getRankLabel(rankCode?: number) {
   return ALLIANCE_RANKS[rankCode as keyof typeof ALLIANCE_RANKS] ?? null;
 }
 
-function buildRankRow(allianceId?: number, selectedRankCode?: number) {
-  const options = Object.entries(ALLIANCE_RANKS)
-    .map(([code, name]) => ({ code: Number(code), name }))
-    .sort((a, b) => a.code - b.code)
-    .map((entry) =>
-      new StringSelectMenuOptionBuilder()
-        .setLabel(entry.name)
-        .setValue(String(entry.code))
-        .setDefault(selectedRankCode === entry.code)
-    );
-
-  const select = new StringSelectMenuBuilder()
-    .setCustomId(allianceId ? `${VERIFY_RANK_PREFIX}${allianceId}` : `${VERIFY_RANK_PREFIX}disabled`)
-    .setPlaceholder(allianceId ? "Select rank" : "Select alliance first")
-    .setDisabled(!allianceId)
-    .addOptions(options);
-
-  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
-}
-
-function buildMemberRow(
-  allianceId?: number,
-  rankCode?: number,
-  page = 0,
-  players: ClaimablePlayer[] = []
-) {
-  const hasContext = allianceId !== undefined && rankCode !== undefined;
-  const hasPlayers = players.length > 0;
-  const select = new StringSelectMenuBuilder()
-    .setCustomId(
-      hasContext ? `${VERIFY_MEMBER_PREFIX}${allianceId}_${rankCode}_${page}` : `${VERIFY_MEMBER_PREFIX}disabled`
-    )
-    .setPlaceholder(
-      !hasContext
-        ? "Select alliance and rank first"
-        : hasPlayers
-          ? "Select your player"
-          : "No unlinked players found for this rank"
-    )
-    .setDisabled(!hasContext || !hasPlayers)
-    .addOptions(
-      hasPlayers
-        ? players.map((player) => new StringSelectMenuOptionBuilder().setLabel(player.playerName).setValue(String(player.playerId)))
-        : [new StringSelectMenuOptionBuilder().setLabel("No players available").setValue("none")]
-    );
-
-  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
-}
-
-function buildPagingRow(allianceId?: number, rankCode?: number, page = 0, hasNextPage = false) {
-  const hasContext = allianceId !== undefined && rankCode !== undefined;
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder()
-      .setCustomId(
-        hasContext ? `${VERIFY_PAGE_PREFIX}prev_${allianceId}_${rankCode}_${page}` : `${VERIFY_PAGE_PREFIX}prev_disabled`
-      )
-      .setLabel("Prev")
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(!hasContext || page <= 0),
-    new ButtonBuilder()
-      .setCustomId(
-        hasContext ? `${VERIFY_PAGE_PREFIX}next_${allianceId}_${rankCode}_${page}` : `${VERIFY_PAGE_PREFIX}next_disabled`
-      )
-      .setLabel("Next")
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(!hasContext || !hasNextPage)
-  );
-}
-
-function buildResetRow(allianceId?: number, rankCode?: number) {
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder()
-      .setCustomId(VERIFY_RESET_ID)
-      .setLabel("Reset")
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(allianceId === undefined && rankCode === undefined)
-  );
-}
-
-function buildVerificationContent(
-  allianceId?: number,
-  rankCode?: number,
-  page = 0,
-  playersCount = 0
-) {
+function buildVerificationContent(allianceId?: number, rankCode?: number, page = 0, playersCount = 0) {
   const allianceLabel = getAllianceLabel(allianceId);
   const rankLabel = getRankLabel(rankCode);
   const step = allianceId === undefined ? 1 : rankCode === undefined ? 2 : 3;
@@ -184,8 +190,9 @@ function buildVerificationContent(
   const playerLabel = step === 3 ? `\n- Players on page: ${playersCount}` : "";
 
   return (
-    `Verification (Step ${step}/3)\n` +
-    `1) Choose alliance (buttons)\n` +
+    `Verification\n` +
+    `-# Step ${step}/3\n\n` +
+    `1) Choose alliance (dropdown)\n` +
     `2) Choose rank (dropdown)\n` +
     `3) Choose your player (dropdown)\n\n` +
     `Current selection:\n` +
@@ -193,11 +200,12 @@ function buildVerificationContent(
     `- Rank: ${rankLabel ?? "Not selected"}` +
     pageLabel +
     playerLabel +
-    `\n\nOnly you can use these controls in this thread.`
+    `\n\n-# Only you can use these controls in this thread.`
   );
 }
 
 function buildVerificationComponents(
+  ownerDiscordUserId: string,
   allianceId?: number,
   rankCode?: number,
   page = 0,
@@ -205,25 +213,31 @@ function buildVerificationComponents(
   hasNextPage = false
 ): Array<ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>> {
   return [
-    buildAllianceRow(allianceId) as ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>,
-    buildRankRow(allianceId, rankCode) as ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>,
-    buildMemberRow(allianceId, rankCode, page, players) as ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>,
-    buildPagingRow(allianceId, rankCode, page, hasNextPage) as ActionRowBuilder<
+    buildAllianceRow(ownerDiscordUserId, allianceId) as ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>,
+    buildRankRow(ownerDiscordUserId, allianceId, rankCode) as ActionRowBuilder<
       ButtonBuilder | StringSelectMenuBuilder
     >,
-    buildResetRow(allianceId, rankCode) as ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>
+    buildMemberRow(ownerDiscordUserId, allianceId, rankCode, page, players) as ActionRowBuilder<
+      ButtonBuilder | StringSelectMenuBuilder
+    >,
+    buildPagingRow(ownerDiscordUserId, allianceId, rankCode, page, hasNextPage) as ActionRowBuilder<
+      ButtonBuilder | StringSelectMenuBuilder
+    >,
+    buildVisitorRow(ownerDiscordUserId) as ActionRowBuilder<
+      ButtonBuilder | StringSelectMenuBuilder
+    >
   ];
 }
 
-function buildLeadershipDecisionComponents(claimId: number) {
+function buildLeadershipDecisionComponents(claimId: number, threadId: string) {
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
-        .setCustomId(`${LEAD_CLAIM_APPROVE_PREFIX}${claimId}`)
+        .setCustomId(`${LEAD_CLAIM_APPROVE_PREFIX}${claimId}_${threadId}`)
         .setLabel("Approve")
         .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
-        .setCustomId(`${LEAD_CLAIM_DENY_PREFIX}${claimId}`)
+        .setCustomId(`${LEAD_CLAIM_DENY_PREFIX}${claimId}_${threadId}`)
         .setLabel("Deny")
         .setStyle(ButtonStyle.Danger)
     )
@@ -246,185 +260,226 @@ export function createDiscordClient(config: AppConfig, logger: AppLogger, handle
   });
 
   client.on(Events.GuildMemberAdd, async (member) => {
-    await handlers.onMemberJoin(member);
+    try {
+      await handlers.onMemberJoin(member);
+    } catch (error) {
+      logger.error({ error, memberId: member.id }, "GuildMemberAdd handler failed");
+    }
   });
 
   client.on(Events.GuildMemberRemove, async (member) => {
-    const resolved = member.partial ? await member.fetch().catch(() => null) : member;
-    if (resolved) {
-      await handlers.onMemberLeave(resolved);
+    try {
+      const resolved = member.partial ? await member.fetch().catch(() => null) : member;
+      if (resolved) {
+        await handlers.onMemberLeave(resolved);
+      }
+    } catch (error) {
+      logger.error({ error, memberId: member.id }, "GuildMemberRemove handler failed");
     }
   });
 
   client.on(Events.InteractionCreate, async (interaction) => {
-    if (interaction.isChatInputCommand()) {
-      if (interaction.commandName === "sync") {
-        const subcommand = interaction.options.getSubcommand(false);
-        if (subcommand === "now") {
-          await handlers.onManualSync();
-          await interaction.reply({ content: "Manual sync started.", ephemeral: true });
+    try {
+      if (interaction.isChatInputCommand()) {
+        if (interaction.commandName === "sync") {
+          const subcommand = interaction.options.getSubcommand(false);
+          if (subcommand === "now") {
+            await handlers.onManualSync();
+            await interaction.reply({ content: "Manual sync started.", ephemeral: true });
+            return;
+          }
+        }
+        if (interaction.commandName === "link") {
+          const subcommand = interaction.options.getSubcommand(false);
+          await interaction.reply({
+            content: `Link subcommand '${subcommand ?? "unknown"}' is scaffolded and not implemented yet.`,
+            ephemeral: true
+          });
           return;
         }
+        if (interaction.commandName === "refresh") {
+          await handlers.onRefresh();
+          await interaction.reply({ content: "Refresh started.", ephemeral: true });
+          return;
+        }
+        await interaction.reply({ content: "Command scaffolding only: not yet implemented.", ephemeral: true });
+        return;
       }
-      if (interaction.commandName === "link") {
-        const subcommand = interaction.options.getSubcommand(false);
-        await interaction.reply({
-          content: `Link subcommand '${subcommand ?? "unknown"}' is scaffolded and not implemented yet.`,
-          ephemeral: true
+
+      if (!interaction.isButton() && !interaction.isStringSelectMenu()) {
+        return;
+      }
+
+      if (interaction.isButton() && interaction.customId.startsWith(LEAD_CLAIM_APPROVE_PREFIX)) {
+        if (interaction.channelId !== config.discord.leadershipChannelId) {
+          await interaction.reply({ content: "This action is only allowed in leadership channel.", ephemeral: true });
+          return;
+        }
+        const payload = interaction.customId.slice(LEAD_CLAIM_APPROVE_PREFIX.length);
+        const [claimIdRaw, threadId] = payload.split("_");
+        const claimId = Number(claimIdRaw);
+        if (!Number.isFinite(claimId) || !threadId) {
+          await interaction.reply({ content: "Invalid claim payload.", ephemeral: true });
+          return;
+        }
+        const approved = await handlers.onApproveClaim(claimId, interaction.user.id);
+        if (!approved) {
+          await interaction.reply({ content: "Claim is no longer pending.", ephemeral: true });
+          return;
+        }
+        await closeVerificationThreadById(threadId, "Claim approved");
+        await interaction.update({
+          content: `Claim approved by <@${interaction.user.id}> for <@${approved.discordUserId}>.`,
+          components: []
         });
         return;
       }
-      if (interaction.commandName === "refresh") {
-        await handlers.onRefresh();
-        await interaction.reply({ content: "Refresh started.", ephemeral: true });
+
+      if (interaction.isButton() && interaction.customId.startsWith(LEAD_CLAIM_DENY_PREFIX)) {
+        if (interaction.channelId !== config.discord.leadershipChannelId) {
+          await interaction.reply({ content: "This action is only allowed in leadership channel.", ephemeral: true });
+          return;
+        }
+        const payload = interaction.customId.slice(LEAD_CLAIM_DENY_PREFIX.length);
+        const [claimIdRaw, threadId] = payload.split("_");
+        const claimId = Number(claimIdRaw);
+        if (!Number.isFinite(claimId) || !threadId) {
+          await interaction.reply({ content: "Invalid claim payload.", ephemeral: true });
+          return;
+        }
+        const denied = await handlers.onDenyClaim(claimId, interaction.user.id);
+        if (!denied) {
+          await interaction.reply({ content: "Claim is no longer pending.", ephemeral: true });
+          return;
+        }
+        await closeVerificationThreadById(threadId, "Claim denied");
+        await interaction.update({
+          content: `Claim denied by <@${interaction.user.id}> for <@${denied.discordUserId}>.`,
+          components: []
+        });
         return;
       }
 
-      await interaction.reply({ content: "Command scaffolding only: not yet implemented.", ephemeral: true });
-      return;
-    }
+      const interactionChannel = interaction.channel;
+      if (
+        !interactionChannel?.isThread() ||
+        interactionChannel.parentId !== config.discord.verificationParentChannelId
+      ) {
+        return;
+      }
 
-    if (!interaction.isButton() && !interaction.isStringSelectMenu()) {
-      return;
-    }
+      const customId = interaction.customId;
 
-    if (interaction.isButton() && interaction.customId.startsWith(LEAD_CLAIM_APPROVE_PREFIX)) {
-      if (interaction.channelId !== config.discord.leadershipChannelId) {
-        await interaction.reply({ content: "This action is only allowed in leadership channel.", ephemeral: true });
-        return;
-      }
-      const claimId = Number(interaction.customId.replace(LEAD_CLAIM_APPROVE_PREFIX, ""));
-      if (!Number.isFinite(claimId)) {
-        await interaction.reply({ content: "Invalid claim id.", ephemeral: true });
-        return;
-      }
-      const approved = await handlers.onApproveClaim(claimId, interaction.user.id);
-      if (!approved) {
-        await interaction.reply({ content: "Claim is no longer pending.", ephemeral: true });
-        return;
-      }
-      await closeVerificationThreadForUser(approved.discordUserId, "Claim approved");
-      await interaction.update({
-        content: `Claim approved by <@${interaction.user.id}> for <@${approved.discordUserId}>.`,
-        components: []
-      });
-      return;
-    }
-
-    if (interaction.isButton() && interaction.customId.startsWith(LEAD_CLAIM_DENY_PREFIX)) {
-      if (interaction.channelId !== config.discord.leadershipChannelId) {
-        await interaction.reply({ content: "This action is only allowed in leadership channel.", ephemeral: true });
-        return;
-      }
-      const claimId = Number(interaction.customId.replace(LEAD_CLAIM_DENY_PREFIX, ""));
-      if (!Number.isFinite(claimId)) {
-        await interaction.reply({ content: "Invalid claim id.", ephemeral: true });
-        return;
-      }
-      const denied = await handlers.onDenyClaim(claimId, interaction.user.id);
-      if (!denied) {
-        await interaction.reply({ content: "Claim is no longer pending.", ephemeral: true });
-        return;
-      }
-      await closeVerificationThreadForUser(denied.discordUserId, "Claim denied");
-      await interaction.update({
-        content: `Claim denied by <@${interaction.user.id}> for <@${denied.discordUserId}>.`,
-        components: []
-      });
-      return;
-    }
-
-    const interactionChannel = interaction.channel;
-    if (!interactionChannel?.isThread() || !isVerificationThreadForUser(interaction.user.id, interactionChannel.name)) {
-      await interaction.reply({
-        content: "Only the member who owns this verification thread can use these controls.",
-        ephemeral: true
-      });
-      return;
-    }
-
-    if (interaction.isButton() && interaction.customId.startsWith(VERIFY_ALLIANCE_PREFIX)) {
-      const selectedAlliance = interaction.customId.replace(VERIFY_ALLIANCE_PREFIX, "");
-      if (selectedAlliance === "visitor") {
+      if (interaction.isButton() && customId.startsWith(VERIFY_VISITOR_PREFIX)) {
+        const parsed = parseOwnedCustomId(VERIFY_VISITOR_PREFIX, customId);
+        if (!parsed || parsed.ownerDiscordUserId !== interaction.user.id) {
+          await interaction.reply({ content: "Only the owner can use these controls.", ephemeral: true });
+          return;
+        }
         await handlers.onJustVisiting(interaction.user.id);
         await interaction.reply({ content: "Marked as just visiting. Closing verification thread.", ephemeral: true });
         await interactionChannel.delete("User selected just visiting");
         return;
       }
 
-      const allianceId = Number(selectedAlliance);
-      await interaction.update({
-        content: buildVerificationContent(allianceId),
-        components: buildVerificationComponents(allianceId)
-      });
-      return;
-    }
-
-    if (interaction.isButton() && interaction.customId === VERIFY_RESET_ID) {
-      await interaction.update({
-        content: buildVerificationContent(),
-        components: buildVerificationComponents()
-      });
-      return;
-    }
-
-    if (interaction.isStringSelectMenu() && interaction.customId.startsWith(VERIFY_RANK_PREFIX)) {
-      const allianceIdRaw = interaction.customId.replace(VERIFY_RANK_PREFIX, "");
-      if (allianceIdRaw === "disabled") {
-        await interaction.reply({ content: "Select an alliance first.", ephemeral: true });
-        return;
-      }
-      const allianceId = Number(allianceIdRaw);
-      const rankCode = Number(interaction.values[0]);
-      const { players, hasNextPage } = await handlers.getClaimablePlayers(allianceId, rankCode, 0);
-
-      await interaction.update({
-        content: buildVerificationContent(allianceId, rankCode, 0, players.length),
-        components: buildVerificationComponents(allianceId, rankCode, 0, players, hasNextPage)
-      });
-      return;
-    }
-
-    if (interaction.isButton() && interaction.customId.startsWith(VERIFY_PAGE_PREFIX)) {
-      const payload = interaction.customId.replace(VERIFY_PAGE_PREFIX, "");
-      if (payload.endsWith("disabled")) {
-        await interaction.reply({ content: "Select alliance and rank first.", ephemeral: true });
+      if (interaction.isStringSelectMenu() && customId.startsWith(VERIFY_ALLIANCE_PREFIX)) {
+        const parsed = parseOwnedCustomId(VERIFY_ALLIANCE_PREFIX, customId);
+        if (!parsed || parsed.ownerDiscordUserId !== interaction.user.id) {
+          await interaction.reply({ content: "Only the owner can use these controls.", ephemeral: true });
+          return;
+        }
+        const allianceId = Number(interaction.values[0]);
+        if (!Number.isFinite(allianceId)) {
+          await interaction.reply({ content: "Invalid alliance selection.", ephemeral: true });
+          return;
+        }
+        await interaction.update({
+          content: buildVerificationContent(allianceId),
+          components: buildVerificationComponents(parsed.ownerDiscordUserId, allianceId)
+        });
         return;
       }
 
-      const [direction, allianceIdRaw, rankCodeRaw, pageRaw] = payload.split("_");
-      const allianceId = Number(allianceIdRaw);
-      const rankCode = Number(rankCodeRaw);
-      const page = Number(pageRaw);
-      const nextPage = direction === "next" ? page + 1 : Math.max(0, page - 1);
-
-      const { players, hasNextPage } = await handlers.getClaimablePlayers(allianceId, rankCode, nextPage);
-      await interaction.update({
-        content: buildVerificationContent(allianceId, rankCode, nextPage, players.length),
-        components: buildVerificationComponents(allianceId, rankCode, nextPage, players, hasNextPage)
-      });
-      return;
-    }
-
-    if (interaction.isStringSelectMenu() && interaction.customId.startsWith(VERIFY_MEMBER_PREFIX)) {
-      const payload = interaction.customId.replace(VERIFY_MEMBER_PREFIX, "");
-      if (payload === "disabled") {
-        await interaction.reply({ content: "Select alliance and rank first.", ephemeral: true });
+      if (interaction.isStringSelectMenu() && customId.startsWith(VERIFY_RANK_PREFIX)) {
+        const parsed = parseOwnedCustomId(VERIFY_RANK_PREFIX, customId);
+        if (!parsed || parsed.ownerDiscordUserId !== interaction.user.id) {
+          await interaction.reply({ content: "Only the owner can use these controls.", ephemeral: true });
+          return;
+        }
+        const allianceId = Number(parsed.rest);
+        if (!Number.isFinite(allianceId) || allianceId === 0) {
+          await interaction.reply({ content: "Select an alliance first.", ephemeral: true });
+          return;
+        }
+        const rankCode = Number(interaction.values[0]);
+        const { players, hasNextPage } = await handlers.getClaimablePlayers(allianceId, rankCode, 0);
+        await interaction.update({
+          content: buildVerificationContent(allianceId, rankCode, 0, players.length),
+          components: buildVerificationComponents(parsed.ownerDiscordUserId, allianceId, rankCode, 0, players, hasNextPage)
+        });
         return;
       }
-      const selectedPlayerId = Number(interaction.values[0]);
-      if (!Number.isFinite(selectedPlayerId)) {
-        await interaction.reply({ content: "Invalid player selection.", ephemeral: true });
+
+      if (interaction.isButton() && customId.startsWith(VERIFY_PAGE_PREFIX)) {
+        const parsed = parseOwnedCustomId(VERIFY_PAGE_PREFIX, customId);
+        if (!parsed || parsed.ownerDiscordUserId !== interaction.user.id) {
+          await interaction.reply({ content: "Only the owner can use these controls.", ephemeral: true });
+          return;
+        }
+        const [direction, allianceIdRaw, rankCodeRaw, pageRaw] = parsed.rest.split("_");
+        const allianceId = Number(allianceIdRaw);
+        const rankCode = Number(rankCodeRaw);
+        const page = Number(pageRaw);
+        if (!Number.isFinite(allianceId) || !Number.isFinite(rankCode) || !Number.isFinite(page)) {
+          await interaction.reply({ content: "Invalid page selection.", ephemeral: true });
+          return;
+        }
+        const nextPage = direction === "next" ? page + 1 : Math.max(0, page - 1);
+        const { players, hasNextPage } = await handlers.getClaimablePlayers(allianceId, rankCode, nextPage);
+        await interaction.update({
+          content: buildVerificationContent(allianceId, rankCode, nextPage, players.length),
+          components: buildVerificationComponents(
+            parsed.ownerDiscordUserId,
+            allianceId,
+            rankCode,
+            nextPage,
+            players,
+            hasNextPage
+          )
+        });
         return;
       }
-      const claim = await handlers.onClaimSubmit(interaction.user.id, selectedPlayerId);
-      await postLeadershipClaimReview(claim);
-      await interaction.update({
-        content:
-          "Claim submitted for leadership review. This thread will be closed after approval or denial.",
-        components: []
-      });
-      return;
+
+      if (interaction.isStringSelectMenu() && customId.startsWith(VERIFY_MEMBER_PREFIX)) {
+        const parsed = parseOwnedCustomId(VERIFY_MEMBER_PREFIX, customId);
+        if (!parsed || parsed.ownerDiscordUserId !== interaction.user.id) {
+          await interaction.reply({ content: "Only the owner can use these controls.", ephemeral: true });
+          return;
+        }
+        const selectedPlayerId = Number(interaction.values[0]);
+        if (!Number.isFinite(selectedPlayerId)) {
+          await interaction.reply({ content: "Invalid player selection.", ephemeral: true });
+          return;
+        }
+        const claim = await handlers.onClaimSubmit(interaction.user.id, selectedPlayerId);
+        await postLeadershipClaimReview(claim, interactionChannel.id);
+        await interaction.update({
+          content: "Claim submitted for leadership review. This thread will be closed after approval or denial.",
+          components: []
+        });
+      }
+    } catch (error) {
+      logger.error(
+        {
+          error,
+          interactionId: interaction.id,
+          customId: "customId" in interaction ? interaction.customId : undefined
+        },
+        "InteractionCreate handler failed"
+      );
+      if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+        await interaction.reply({ content: "Something went wrong while processing this action.", ephemeral: true });
+      }
     }
   });
 
@@ -436,10 +491,10 @@ export function createDiscordClient(config: AppConfig, logger: AppLogger, handle
     }
     if (parent.type === ChannelType.GuildForum) {
       await parent.threads.create({
-        name: `verify-${member.user.username}-${member.user.id}`,
+        name: buildVerificationThreadName(member.user.username),
         message: {
           content: buildVerificationContent(),
-          components: buildVerificationComponents()
+          components: buildVerificationComponents(member.id)
         },
         reason: "Auto-create verification thread on member join"
       });
@@ -447,7 +502,7 @@ export function createDiscordClient(config: AppConfig, logger: AppLogger, handle
     }
     if (parent.type === ChannelType.GuildText) {
       const thread = await parent.threads.create({
-        name: `verify-${member.user.username}-${member.user.id}`,
+        name: buildVerificationThreadName(member.user.username),
         autoArchiveDuration: ThreadAutoArchiveDuration.OneDay,
         type: ChannelType.PrivateThread,
         reason: "Auto-create verification thread on member join"
@@ -455,18 +510,16 @@ export function createDiscordClient(config: AppConfig, logger: AppLogger, handle
       await thread.members.add(member.id).catch(() => {
         logger.warn({ memberId: member.id }, "Could not add member to private verification thread");
       });
-      await thread.send(
-        {
-          content: buildVerificationContent(),
-          components: buildVerificationComponents()
-        }
-      );
+      await thread.send({
+        content: buildVerificationContent(),
+        components: buildVerificationComponents(member.id)
+      });
       return;
     }
     logger.warn({ channelType: parent.type }, "Unsupported verification parent channel type");
   }
 
-  async function postLeadershipClaimReview(claim: ClaimSubmission) {
+  async function postLeadershipClaimReview(claim: ClaimSubmission, threadId: string) {
     const leadershipChannel = await client.channels.fetch(config.discord.leadershipChannelId);
     if (!leadershipChannel || !leadershipChannel.isTextBased() || !("send" in leadershipChannel)) {
       logger.warn("Leadership channel not found or not text-based; could not post claim review");
@@ -478,20 +531,14 @@ export function createDiscordClient(config: AppConfig, logger: AppLogger, handle
         `Claim ID: ${claim.claimId}\n` +
         `Discord User: <@${claim.discordUserId}>\n` +
         `Player: ${claim.playerName} (${claim.playerId})`,
-      components: buildLeadershipDecisionComponents(claim.claimId)
+      components: buildLeadershipDecisionComponents(claim.claimId, threadId)
     });
   }
 
-  async function closeVerificationThreadForUser(discordUserId: string, reason: string) {
-    const parent = await client.channels.fetch(config.discord.verificationParentChannelId).catch(() => null);
-    if (!parent || !("threads" in parent)) {
-      return;
-    }
-    const active = await parent.threads.fetchActive();
-    for (const [, thread] of active.threads) {
-      if (isVerificationThreadForUser(discordUserId, thread.name)) {
-        await thread.delete(reason).catch(() => null);
-      }
+  async function closeVerificationThreadById(threadId: string, reason: string) {
+    const channel = await client.channels.fetch(threadId).catch(() => null);
+    if (channel?.isThread()) {
+      await channel.delete(reason).catch(() => null);
     }
   }
 
