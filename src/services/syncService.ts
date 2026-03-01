@@ -48,37 +48,7 @@ export class SyncService {
         );
 
         processedPlayers += alliance.players.length;
-
-        for (const player of alliance.players) {
-          seenPlayerIds.add(player.player_id);
-          await this.pool.query(
-            `
-            INSERT INTO players (id, current_name, current_alliance_id, current_alliance_rank, level, might, loot, honor, last_seen_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-            ON CONFLICT (id)
-            DO UPDATE SET
-              current_name = EXCLUDED.current_name,
-              current_alliance_id = EXCLUDED.current_alliance_id,
-              current_alliance_rank = EXCLUDED.current_alliance_rank,
-              level = EXCLUDED.level,
-              might = EXCLUDED.might,
-              loot = EXCLUDED.loot,
-              honor = EXCLUDED.honor,
-              last_seen_at = NOW(),
-              updated_at = NOW()
-            `,
-            [
-              player.player_id,
-              player.player_name,
-              allianceId,
-              player.alliance_rank,
-              player.level ?? null,
-              player.might ?? null,
-              player.loot ?? null,
-              player.honor ?? null
-            ]
-          );
-        }
+        await this.upsertAlliancePlayers(allianceId, alliance.players, seenPlayerIds);
       }
 
       const seenIds = Array.from(seenPlayerIds);
@@ -112,5 +82,109 @@ export class SyncService {
       this.logger.error({ error, syncRunId }, "Sync failed");
       throw error;
     }
+  }
+
+  private async upsertAlliancePlayers(
+    allianceId: number,
+    players: Array<{
+      player_id: number;
+      player_name: string;
+      alliance_rank: number;
+      level?: number;
+      might?: number;
+      loot?: number;
+      honor?: number;
+    }>,
+    seenPlayerIds: Set<number>
+  ) {
+    if (players.length === 0) {
+      return;
+    }
+
+    const ids: number[] = [];
+    const names: string[] = [];
+    const allianceIds: number[] = [];
+    const rankCodes: number[] = [];
+    const levels: Array<number | null> = [];
+    const mights: Array<number | null> = [];
+    const loots: Array<number | null> = [];
+    const honors: Array<number | null> = [];
+
+    for (const player of players) {
+      const parsedId = Number(player.player_id);
+      if (!Number.isFinite(parsedId)) {
+        continue;
+      }
+      seenPlayerIds.add(parsedId);
+      ids.push(parsedId);
+      names.push(player.player_name);
+      allianceIds.push(allianceId);
+      rankCodes.push(player.alliance_rank);
+      levels.push(player.level ?? null);
+      mights.push(player.might ?? null);
+      loots.push(player.loot ?? null);
+      honors.push(player.honor ?? null);
+    }
+
+    if (ids.length === 0) {
+      return;
+    }
+
+    await this.pool.query(
+      `
+      INSERT INTO players (
+        id,
+        current_name,
+        current_alliance_id,
+        current_alliance_rank,
+        level,
+        might,
+        loot,
+        honor,
+        last_seen_at
+      )
+      SELECT
+        t.id,
+        t.current_name,
+        t.current_alliance_id,
+        t.current_alliance_rank,
+        t.level,
+        t.might,
+        t.loot,
+        t.honor,
+        NOW()
+      FROM UNNEST(
+        $1::bigint[],
+        $2::text[],
+        $3::bigint[],
+        $4::smallint[],
+        $5::integer[],
+        $6::bigint[],
+        $7::bigint[],
+        $8::bigint[]
+      ) AS t(
+        id,
+        current_name,
+        current_alliance_id,
+        current_alliance_rank,
+        level,
+        might,
+        loot,
+        honor
+      )
+      ON CONFLICT (id)
+      DO UPDATE SET
+        current_name = EXCLUDED.current_name,
+        current_alliance_id = EXCLUDED.current_alliance_id,
+        current_alliance_rank = EXCLUDED.current_alliance_rank,
+        level = EXCLUDED.level,
+        might = EXCLUDED.might,
+        loot = EXCLUDED.loot,
+        honor = EXCLUDED.honor,
+        last_seen_at = NOW(),
+        updated_at = NOW()
+      `,
+      [ids, names, allianceIds, rankCodes, levels, mights, loots, honors]
+    );
   }
 }

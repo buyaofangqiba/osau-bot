@@ -113,6 +113,61 @@ export class VerificationService {
     return result.rows[0] ?? null;
   }
 
+  async approveClaimAndUpsertLink(
+    claimId: number,
+    reviewerDiscordUserId: string
+  ): Promise<ClaimDecisionResult | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const approved = await client.query<ClaimDecisionResult>(
+        `
+        UPDATE claim_requests
+        SET
+          status = 'approved',
+          reviewed_at = NOW(),
+          reviewed_by_discord_user_id = $2
+        WHERE id = $1
+          AND status = 'pending'
+        RETURNING
+          id AS "claimId",
+          discord_user_id AS "discordUserId",
+          player_id AS "playerId",
+          reviewed_by_discord_user_id AS "reviewerDiscordUserId"
+        `,
+        [claimId, reviewerDiscordUserId]
+      );
+
+      const row = approved.rows[0] ?? null;
+      if (!row) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+
+      await client.query(
+        `
+        INSERT INTO discord_links (discord_user_id, player_id, linked_by_discord_user_id)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (discord_user_id)
+        DO UPDATE SET
+          player_id = EXCLUDED.player_id,
+          linked_by_discord_user_id = EXCLUDED.linked_by_discord_user_id,
+          unlinked_at = NULL,
+          updated_at = NOW()
+        `,
+        [row.discordUserId, row.playerId, row.reviewerDiscordUserId]
+      );
+
+      await client.query("COMMIT");
+      return row;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async denyClaim(claimId: number, reviewerDiscordUserId: string): Promise<ClaimDecisionResult | null> {
     const result = await this.pool.query<ClaimDecisionResult>(
       `
@@ -132,5 +187,18 @@ export class VerificationService {
       [claimId, reviewerDiscordUserId]
     );
     return result.rows[0] ?? null;
+  }
+
+  async purgeExpiredDeniedClaims(retentionDays: number): Promise<number> {
+    const result = await this.pool.query(
+      `
+      DELETE FROM claim_requests
+      WHERE status = 'denied'
+        AND expires_at IS NOT NULL
+        AND expires_at < NOW() - ($1::int * INTERVAL '1 day')
+      `,
+      [retentionDays]
+    );
+    return result.rowCount ?? 0;
   }
 }

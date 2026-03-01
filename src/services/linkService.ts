@@ -25,11 +25,29 @@ export class LinkService {
     this.logger.info({ playerId, discordUserId, actorDiscordUserId }, "Linked player to Discord user");
   }
 
-  async unlinkByPlayer(playerId: number, actorDiscordUserId: string) {
+  async unlinkByPlayer(playerId: number, actorDiscordUserId: string): Promise<string[]> {
+    const existing = await this.pool.query<{ discord_user_id: string }>(
+      `SELECT discord_user_id FROM discord_links WHERE player_id = $1 AND unlinked_at IS NULL`,
+      [playerId]
+    );
     await this.pool.query(
       `UPDATE discord_links SET unlinked_at = NOW(), updated_at = NOW() WHERE player_id = $1 AND unlinked_at IS NULL`,
       [playerId]
     );
     this.logger.info({ playerId, actorDiscordUserId }, "Unlinked player from Discord user");
+    return existing.rows.map((row) => row.discord_user_id);
+  }
+
+  async resolvePlayerByName(playerName: string): Promise<{ playerId: number; playerName: string } | null> {
+    const result = await this.pool.query<{ playerId: number; playerName: string }>(
+      `
+      SELECT id AS "playerId", current_name AS "playerName"
+      FROM players
+      WHERE LOWER(current_name) = LOWER($1)
+      LIMIT 1
+      `,
+      [playerName]
+    );
+    return result.rows[0] ?? null;
   }
 }

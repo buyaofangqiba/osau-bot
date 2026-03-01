@@ -9,7 +9,6 @@ export const COMMAND_DEFINITIONS: RESTPostAPIChatInputApplicationCommandsJSONBod
     .setDescription("Sync commands")
     .addSubcommand((sub) => sub.setName("now").setDescription("Run sync immediately"))
     .toJSON(),
-  new SlashCommandBuilder().setName("refresh").setDescription("Refresh/reconcile links and roles").toJSON(),
   new SlashCommandBuilder()
     .setName("link")
     .setDescription("Link management commands")
