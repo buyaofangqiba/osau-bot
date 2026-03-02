@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import type { AppConfig } from "../config.js";
 import type { AppLogger } from "../logger.js";
 
 export interface ClaimablePlayer {
@@ -21,10 +22,15 @@ export interface ClaimDecisionResult {
 }
 
 export class VerificationService {
+  private readonly trackedAllianceIds: Set<number>;
+
   constructor(
     private readonly pool: Pool,
-    private readonly logger: AppLogger
-  ) {}
+    private readonly logger: AppLogger,
+    config: AppConfig
+  ) {
+    this.trackedAllianceIds = new Set(config.gge.syncAllianceIds);
+  }
 
   async recordClaim(discordUserId: string, playerId: number): Promise<ClaimSubmission> {
     const result = await this.pool.query<ClaimSubmission>(
@@ -140,6 +146,39 @@ export class VerificationService {
 
       const row = approved.rows[0] ?? null;
       if (!row) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+
+      const eligibility = await client.query<{
+        currentAllianceId: number | string | null;
+        linkedElsewhere: boolean;
+      }>(
+        `
+        SELECT
+          p.current_alliance_id AS "currentAllianceId",
+          EXISTS (
+            SELECT 1
+            FROM discord_links dl
+            WHERE dl.player_id = p.id
+              AND dl.unlinked_at IS NULL
+              AND dl.discord_user_id <> $2
+          ) AS "linkedElsewhere"
+        FROM players p
+        WHERE p.id = $1
+        FOR UPDATE
+        `,
+        [row.playerId, row.discordUserId]
+      );
+      const eligibilityRow = eligibility.rows[0];
+      const allianceId =
+        eligibilityRow?.currentAllianceId === null || eligibilityRow?.currentAllianceId === undefined
+          ? null
+          : Number(eligibilityRow.currentAllianceId);
+      const isTrackedAlliance =
+        allianceId !== null && Number.isFinite(allianceId) && this.trackedAllianceIds.has(allianceId);
+
+      if (!eligibilityRow || !isTrackedAlliance || eligibilityRow.linkedElsewhere) {
         await client.query("ROLLBACK");
         return null;
       }

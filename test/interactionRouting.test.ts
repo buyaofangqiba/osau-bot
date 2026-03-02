@@ -34,6 +34,8 @@ describe("interactionRouting", () => {
       expect(parseClaimDecisionPayload("lead_claim_approve_nope_123", "lead_claim_approve_")).toBeNull();
       expect(parseClaimDecisionPayload("lead_claim_approve_42", "lead_claim_approve_")).toBeNull();
       expect(parseClaimDecisionPayload("lead_claim_deny_42_123", "lead_claim_approve_")).toBeNull();
+      expect(parseClaimDecisionPayload("lead_claim_approve_1.5_123", "lead_claim_approve_")).toBeNull();
+      expect(parseClaimDecisionPayload("lead_claim_approve_0_123", "lead_claim_approve_")).toBeNull();
     });
   });
 
@@ -53,6 +55,9 @@ describe("interactionRouting", () => {
       expect(parseVerifyPagePayload("foo_530061_0_1")).toBeNull();
       expect(parseVerifyPagePayload("next_abc_0_1")).toBeNull();
       expect(parseVerifyPagePayload("prev_530061_0")).toBeNull();
+      expect(parseVerifyPagePayload("next_530061.1_0_1")).toBeNull();
+      expect(parseVerifyPagePayload("next_530061_-1_1")).toBeNull();
+      expect(parseVerifyPagePayload("next_530061_0_-1")).toBeNull();
     });
   });
 

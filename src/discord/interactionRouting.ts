@@ -37,7 +37,7 @@ export function parseClaimDecisionPayload(customId: string, prefix: string): Cla
   const payload = customId.slice(prefix.length);
   const [claimIdRaw, threadId] = payload.split("_");
   const claimId = Number(claimIdRaw);
-  if (!Number.isFinite(claimId) || !threadId) {
+  if (!Number.isInteger(claimId) || claimId <= 0 || !threadId) {
     return null;
   }
   return { claimId, threadId };
@@ -51,7 +51,14 @@ export function parseVerifyPagePayload(rest: string): VerifyPagePayload | null {
   const allianceId = Number(allianceIdRaw);
   const rankCode = Number(rankCodeRaw);
   const page = Number(pageRaw);
-  if (!Number.isFinite(allianceId) || !Number.isFinite(rankCode) || !Number.isFinite(page)) {
+  if (
+    !Number.isInteger(allianceId) ||
+    allianceId <= 0 ||
+    !Number.isInteger(rankCode) ||
+    rankCode < 0 ||
+    !Number.isInteger(page) ||
+    page < 0
+  ) {
     return null;
   }
   return {
@@ -65,4 +72,3 @@ export function parseVerifyPagePayload(rest: string): VerifyPagePayload | null {
 export function isOwnedInteraction(ownerDiscordUserId: string, actorDiscordUserId: string): boolean {
   return ownerDiscordUserId === actorDiscordUserId;
 }
-

@@ -24,6 +24,11 @@ import type { AppLogger } from "../logger.js";
 import type { ClaimSubmission, ClaimablePlayer } from "../services/verificationService.js";
 import { COMMAND_DEFINITIONS } from "./commands.js";
 
+export interface TrackedAllianceMeta {
+  id: number;
+  name: string;
+}
+
 export interface DiscordHandlers {
   onManualSync(): Promise<void>;
   onManualSyncByActor(discordUserId: string): Promise<void>;
@@ -50,20 +55,29 @@ function buildVerificationThreadName(username: string): string {
   return `verify-${toSafeUsername(username)}`;
 }
 
-function buildAllianceRow(ownerDiscordUserId: string, selectedAllianceId?: number) {
+function buildAllianceRow(
+  ownerDiscordUserId: string,
+  trackedAlliances: TrackedAllianceMeta[],
+  selectedAllianceId?: number
+) {
   const select = new StringSelectMenuBuilder()
     .setCustomId(`${COMPONENT_PREFIXES.verifyAlliance}${ownerDiscordUserId}_select`)
-    .setPlaceholder("Select alliance")
-    .addOptions(
-      new StringSelectMenuOptionBuilder()
-        .setLabel("Dark Warriors")
-        .setValue("530061")
-        .setDefault(selectedAllianceId === 530061),
-      new StringSelectMenuOptionBuilder()
-        .setLabel("La Muerte")
-        .setValue("10061")
-        .setDefault(selectedAllianceId === 10061)
-    );
+    .setPlaceholder("Select alliance");
+
+  const options = trackedAlliances.map((alliance) =>
+    new StringSelectMenuOptionBuilder()
+      .setLabel(alliance.name)
+      .setValue(String(alliance.id))
+      .setDefault(selectedAllianceId === alliance.id)
+  );
+  if (options.length > 0) {
+    select.addOptions(options);
+  } else {
+    select
+      .setDisabled(true)
+      .setPlaceholder("No tracked alliances configured")
+      .addOptions(new StringSelectMenuOptionBuilder().setLabel("No alliances configured").setValue("none"));
+  }
   return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
 }
 
@@ -152,14 +166,11 @@ function buildVisitorRow(ownerDiscordUserId: string) {
   );
 }
 
-function getAllianceLabel(allianceId?: number) {
-  if (allianceId === 530061) {
-    return "Dark Warriors";
+function getAllianceLabel(allianceId: number | undefined, trackedAlliancesById: Map<number, string>) {
+  if (allianceId === undefined) {
+    return null;
   }
-  if (allianceId === 10061) {
-    return "La Muerte";
-  }
-  return null;
+  return trackedAlliancesById.get(allianceId) ?? `Alliance ${allianceId}`;
 }
 
 function getRankLabel(rankCode?: number) {
@@ -169,8 +180,14 @@ function getRankLabel(rankCode?: number) {
   return ALLIANCE_RANKS[rankCode as keyof typeof ALLIANCE_RANKS] ?? null;
 }
 
-function buildVerificationContent(allianceId?: number, rankCode?: number, page = 0, playersCount = 0) {
-  const allianceLabel = getAllianceLabel(allianceId);
+function buildVerificationContent(
+  trackedAlliancesById: Map<number, string>,
+  allianceId?: number,
+  rankCode?: number,
+  page = 0,
+  playersCount = 0
+) {
+  const allianceLabel = getAllianceLabel(allianceId, trackedAlliancesById);
   const rankLabel = getRankLabel(rankCode);
   const status =
     allianceLabel && rankLabel
@@ -189,6 +206,7 @@ function buildVerificationContent(allianceId?: number, rankCode?: number, page =
 }
 
 function buildVerificationComponents(
+  trackedAlliances: TrackedAllianceMeta[],
   ownerDiscordUserId: string,
   allianceId?: number,
   rankCode?: number,
@@ -197,7 +215,9 @@ function buildVerificationComponents(
   hasNextPage = false
 ): Array<ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>> {
   return [
-    buildAllianceRow(ownerDiscordUserId, allianceId) as ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>,
+    buildAllianceRow(ownerDiscordUserId, trackedAlliances, allianceId) as ActionRowBuilder<
+      ButtonBuilder | StringSelectMenuBuilder
+    >,
     buildRankRow(ownerDiscordUserId, allianceId, rankCode) as ActionRowBuilder<
       ButtonBuilder | StringSelectMenuBuilder
     >,
@@ -228,7 +248,12 @@ function buildLeadershipDecisionComponents(claimId: number, threadId: string) {
   ];
 }
 
-export function createDiscordClient(config: AppConfig, logger: AppLogger, handlers: DiscordHandlers) {
+export function createDiscordClient(
+  config: AppConfig,
+  logger: AppLogger,
+  handlers: DiscordHandlers,
+  trackedAlliancesInput?: TrackedAllianceMeta[]
+) {
   const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
     partials: [Partials.GuildMember]
@@ -242,6 +267,31 @@ export function createDiscordClient(config: AppConfig, logger: AppLogger, handle
     config.roleIds.diplomat,
     config.roleIds.recruiter
   ]);
+  const trackedAlliances =
+    trackedAlliancesInput && trackedAlliancesInput.length > 0
+      ? trackedAlliancesInput
+      : config.gge.syncAllianceIds.map((id) => ({ id, name: `Alliance ${id}` }));
+  const trackedAlliancesById = new Map(trackedAlliances.map((alliance) => [alliance.id, alliance.name]));
+
+  const buildVerificationContentForThread = (allianceId?: number, rankCode?: number, page = 0, playersCount = 0) =>
+    buildVerificationContent(trackedAlliancesById, allianceId, rankCode, page, playersCount);
+  const buildVerificationComponentsForThread = (
+    ownerDiscordUserId: string,
+    allianceId?: number,
+    rankCode?: number,
+    page = 0,
+    players: ClaimablePlayer[] = [],
+    hasNextPage = false
+  ) =>
+    buildVerificationComponents(
+      trackedAlliances,
+      ownerDiscordUserId,
+      allianceId,
+      rankCode,
+      page,
+      players,
+      hasNextPage
+    );
 
   async function actorIsLeadership(discordUserId: string): Promise<boolean> {
     const guild = await client.guilds.fetch(config.discord.guildId);
@@ -287,8 +337,8 @@ export function createDiscordClient(config: AppConfig, logger: AppLogger, handle
       chatHandlers: handlers,
       componentHandlers: handlers,
       componentHelpers: {
-        buildVerificationContent,
-        buildVerificationComponents,
+        buildVerificationContent: buildVerificationContentForThread,
+        buildVerificationComponents: buildVerificationComponentsForThread,
         closeVerificationThreadById,
         postLeadershipClaimReview
       },
@@ -307,8 +357,8 @@ export function createDiscordClient(config: AppConfig, logger: AppLogger, handle
       await parent.threads.create({
         name: buildVerificationThreadName(member.user.username),
         message: {
-          content: buildVerificationContent(),
-          components: buildVerificationComponents(member.id)
+          content: buildVerificationContentForThread(),
+          components: buildVerificationComponentsForThread(member.id)
         },
         reason: "Auto-create verification thread on member join"
       });
@@ -325,8 +375,8 @@ export function createDiscordClient(config: AppConfig, logger: AppLogger, handle
         logger.warn({ memberId: member.id }, "Could not add member to private verification thread");
       });
       await thread.send({
-        content: buildVerificationContent(),
-        components: buildVerificationComponents(member.id)
+        content: buildVerificationContentForThread(),
+        components: buildVerificationComponentsForThread(member.id)
       });
       return;
     }

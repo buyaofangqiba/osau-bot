@@ -18,8 +18,10 @@ function createConfig() {
       member: "r8",
       novice: "r9",
       visitor: "g-visitor",
-      allianceDarkWarriors: "g-dw",
-      allianceLaMuerte: "g-lm",
+      allianceById: {
+        530061: "g-dw",
+        10061: "g-lm"
+      },
       alumni: "g-alumni"
     }
   } as any;
@@ -47,7 +49,8 @@ function createMember(roleIds: string[]) {
 function createGuildWithMembers(memberById: Record<string, any>) {
   return {
     members: {
-      fetch: vi.fn((discordUserId: string) => {
+      fetch: vi.fn((input: string | { user: string }) => {
+        const discordUserId = typeof input === "string" ? input : input.user;
         const member = memberById[discordUserId];
         if (!member) {
           return Promise.reject(new Error("not found"));
@@ -86,8 +89,8 @@ describe("DiscordRoleService", () => {
           {
             discordUserId: "user-1",
             playerId: 1001,
-            currentAllianceId: 10061,
-            currentAllianceRank: 1
+            currentAllianceId: "10061",
+            currentAllianceRank: "1"
           }
         ]
       })
@@ -206,8 +209,8 @@ describe("DiscordRoleService", () => {
     await service.reconcileDiscordUser("user-1");
     await service.reconcileDiscordUser("user-404");
 
-    expect(guild.members.fetch).toHaveBeenCalledWith("user-1");
-    expect(guild.members.fetch).toHaveBeenCalledWith("user-404");
+    expect(guild.members.fetch).toHaveBeenCalledWith({ user: "user-1", force: true });
+    expect(guild.members.fetch).toHaveBeenCalledWith({ user: "user-404", force: true });
     expect(member.roles.add).toHaveBeenCalledTimes(1);
     expect(pool.query).toHaveBeenCalledTimes(1);
   });

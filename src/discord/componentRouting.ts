@@ -45,7 +45,7 @@ export type ComponentRouteResult =
 
 function parseSelectedNumber(value: string | undefined): number | null {
   const numberValue = Number(value);
-  if (!Number.isFinite(numberValue)) {
+  if (!Number.isInteger(numberValue) || numberValue < 0) {
     return null;
   }
   return numberValue;
@@ -98,7 +98,7 @@ export function routeComponentInteraction(input: ComponentRouteInput): Component
       return { type: "error", message: "Only the owner can use these controls." };
     }
     const allianceId = parseSelectedNumber(input.selectedValues?.[0]);
-    if (allianceId === null) {
+    if (allianceId === null || allianceId === 0) {
       return { type: "error", message: "Invalid alliance selection." };
     }
     return { type: "verify_alliance", ownerDiscordUserId: parsed.ownerDiscordUserId, allianceId };
@@ -145,7 +145,7 @@ export function routeComponentInteraction(input: ComponentRouteInput): Component
       return { type: "error", message: "Only the owner can use these controls." };
     }
     const selectedPlayerId = parseSelectedNumber(input.selectedValues?.[0]);
-    if (selectedPlayerId === null) {
+    if (selectedPlayerId === null || selectedPlayerId === 0) {
       return { type: "error", message: "Invalid player selection." };
     }
     return { type: "verify_member", ownerDiscordUserId: parsed.ownerDiscordUserId, selectedPlayerId };

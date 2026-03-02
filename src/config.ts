@@ -17,8 +17,7 @@ const envSchema = z.object({
   DISCORD_ROLE_ID_MEMBER: z.string().min(1),
   DISCORD_ROLE_ID_NOVICE: z.string().min(1),
   DISCORD_ROLE_ID_VISITOR: z.string().min(1),
-  DISCORD_ROLE_ID_ALLIANCE_DARK_WARRIORS: z.string().min(1),
-  DISCORD_ROLE_ID_ALLIANCE_LA_MUERTE: z.string().min(1),
+  DISCORD_ALLIANCE_ROLE_MAP: z.string().min(1),
   DISCORD_ROLE_ID_ALUMNI: z.string().min(1),
   GGE_API_BASE_URL: z.string().url().default("https://api.gge-tracker.com/api/v1"),
   GGE_SERVER_CODE: z.string().default("WORLD2"),
@@ -50,8 +49,7 @@ export interface AppConfig {
     member: string;
     novice: string;
     visitor: string;
-    allianceDarkWarriors: string;
-    allianceLaMuerte: string;
+    allianceById: Record<number, string>;
     alumni: string;
   };
   gge: {
@@ -68,6 +66,31 @@ export interface AppConfig {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = envSchema.parse(env);
+  const syncAllianceIds = parsed.SYNC_ALLIANCE_IDS.split(",").map((id) => Number(id.trim()));
+  const allianceById: Record<number, string> = {};
+
+  for (const entry of parsed.DISCORD_ALLIANCE_ROLE_MAP.split(",")) {
+    const [allianceIdRaw, roleIdRaw] = entry.split(":");
+    const allianceId = Number((allianceIdRaw ?? "").trim());
+    const roleId = (roleIdRaw ?? "").trim();
+    if (!Number.isFinite(allianceId) || !roleId) {
+      throw new Error(
+        `Invalid DISCORD_ALLIANCE_ROLE_MAP entry '${entry}'. Expected CSV of '<alliance_id>:<discord_role_id>'.`
+      );
+    }
+    allianceById[allianceId] = roleId;
+  }
+
+  for (const allianceId of syncAllianceIds) {
+    if (!Number.isFinite(allianceId)) {
+      throw new Error(`Invalid alliance id '${String(allianceId)}' in SYNC_ALLIANCE_IDS.`);
+    }
+    if (!allianceById[allianceId]) {
+      throw new Error(
+        `Missing Discord role mapping for alliance ${allianceId}. Set DISCORD_ALLIANCE_ROLE_MAP accordingly.`
+      );
+    }
+  }
 
   return {
     discord: {
@@ -89,14 +112,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       member: parsed.DISCORD_ROLE_ID_MEMBER,
       novice: parsed.DISCORD_ROLE_ID_NOVICE,
       visitor: parsed.DISCORD_ROLE_ID_VISITOR,
-      allianceDarkWarriors: parsed.DISCORD_ROLE_ID_ALLIANCE_DARK_WARRIORS,
-      allianceLaMuerte: parsed.DISCORD_ROLE_ID_ALLIANCE_LA_MUERTE,
+      allianceById,
       alumni: parsed.DISCORD_ROLE_ID_ALUMNI
     },
     gge: {
       baseUrl: parsed.GGE_API_BASE_URL,
       serverCode: parsed.GGE_SERVER_CODE,
-      syncAllianceIds: parsed.SYNC_ALLIANCE_IDS.split(",").map((id) => Number(id.trim()))
+      syncAllianceIds
     },
     databaseUrl: parsed.DATABASE_URL,
     syncIntervalHours: parsed.SYNC_INTERVAL_HOURS,

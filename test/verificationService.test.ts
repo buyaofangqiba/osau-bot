@@ -9,6 +9,14 @@ function createLogger() {
   } as any;
 }
 
+function createConfig() {
+  return {
+    gge: {
+      syncAllianceIds: [530061, 10061]
+    }
+  } as any;
+}
+
 describe("VerificationService", () => {
   it("records claim and logs claim id", async () => {
     const logger = createLogger();
@@ -17,7 +25,7 @@ describe("VerificationService", () => {
         rows: [{ claimId: 11, discordUserId: "123", playerId: 1001, playerName: "Alpha" }]
       })
     } as any;
-    const service = new VerificationService(pool, logger);
+    const service = new VerificationService(pool, logger, createConfig());
 
     const claim = await service.recordClaim("123", 1001);
 
@@ -37,7 +45,7 @@ describe("VerificationService", () => {
     const pool = {
       query: vi.fn().mockResolvedValue({ rows })
     } as any;
-    const service = new VerificationService(pool, createLogger());
+    const service = new VerificationService(pool, createLogger(), createConfig());
 
     const result = await service.getClaimablePlayersByAllianceRank(530061, 0, 0);
 
@@ -50,7 +58,7 @@ describe("VerificationService", () => {
     const pool = {
       query: vi.fn().mockResolvedValue({ rows: [] })
     } as any;
-    const service = new VerificationService(pool, createLogger());
+    const service = new VerificationService(pool, createLogger(), createConfig());
 
     await service.getClaimablePlayersByAllianceRank(530061, 0, -3, 999);
 
@@ -72,6 +80,9 @@ describe("VerificationService", () => {
           }
         ]
       })
+      .mockResolvedValueOnce({
+        rows: [{ currentAllianceId: "530061", linkedElsewhere: false }]
+      })
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined);
 
@@ -79,13 +90,13 @@ describe("VerificationService", () => {
     const pool = {
       connect: vi.fn().mockResolvedValue({ query, release })
     } as any;
-    const service = new VerificationService(pool, createLogger());
+    const service = new VerificationService(pool, createLogger(), createConfig());
 
     const result = await service.approveClaimAndUpsertLink(1, "999");
 
     expect(result?.claimId).toBe(1);
     expect(query).toHaveBeenNthCalledWith(1, "BEGIN");
-    expect(String(query.mock.calls[2]?.[0])).toContain("INSERT INTO discord_links");
+    expect(String(query.mock.calls[3]?.[0])).toContain("INSERT INTO discord_links");
     expect(query).toHaveBeenLastCalledWith("COMMIT");
     expect(release).toHaveBeenCalledTimes(1);
   });
@@ -101,7 +112,7 @@ describe("VerificationService", () => {
     const pool = {
       connect: vi.fn().mockResolvedValue({ query, release })
     } as any;
-    const service = new VerificationService(pool, createLogger());
+    const service = new VerificationService(pool, createLogger(), createConfig());
 
     const result = await service.approveClaimAndUpsertLink(99, "999");
 
@@ -125,6 +136,9 @@ describe("VerificationService", () => {
           }
         ]
       }) // UPDATE claim_requests
+      .mockResolvedValueOnce({
+        rows: [{ currentAllianceId: "530061", linkedElsewhere: false }]
+      }) // eligibility query
       .mockRejectedValueOnce(new Error("db failure")) // INSERT discord_links
       .mockResolvedValueOnce(undefined); // ROLLBACK in catch
 
@@ -132,7 +146,7 @@ describe("VerificationService", () => {
     const pool = {
       connect: vi.fn().mockResolvedValue({ query, release })
     } as any;
-    const service = new VerificationService(pool, createLogger());
+    const service = new VerificationService(pool, createLogger(), createConfig());
 
     await expect(service.approveClaimAndUpsertLink(1, "999")).rejects.toThrow("db failure");
     expect(query).toHaveBeenLastCalledWith("ROLLBACK");
@@ -145,7 +159,7 @@ describe("VerificationService", () => {
         rows: Array.from({ length: 5 }, (_, i) => ({ playerId: i + 1, playerName: `P${i + 1}` }))
       })
     } as any;
-    const service = new VerificationService(pool, createLogger());
+    const service = new VerificationService(pool, createLogger(), createConfig());
 
     const result = await service.getClaimablePlayersByAllianceRank(530061, 0, 3, 10);
 
@@ -158,7 +172,7 @@ describe("VerificationService", () => {
     const pool = {
       query: vi.fn().mockResolvedValue(undefined)
     } as any;
-    const service = new VerificationService(pool, logger);
+    const service = new VerificationService(pool, logger, createConfig());
 
     await service.markJustVisiting("123");
 
@@ -181,7 +195,7 @@ describe("VerificationService", () => {
         })
         .mockResolvedValueOnce({ rows: [] })
     } as any;
-    const service = new VerificationService(pool, createLogger());
+    const service = new VerificationService(pool, createLogger(), createConfig());
 
     await expect(service.approveClaim(1, "999")).resolves.toEqual({
       claimId: 1,
@@ -203,10 +217,39 @@ describe("VerificationService", () => {
     const pool = {
       query: vi.fn().mockResolvedValueOnce({ rowCount: 3 }).mockResolvedValueOnce({})
     } as any;
-    const service = new VerificationService(pool, createLogger());
-
+    const service = new VerificationService(pool, createLogger(), createConfig());
     await expect(service.purgeExpiredDeniedClaims(14)).resolves.toBe(3);
     await expect(service.purgeExpiredDeniedClaims(14)).resolves.toBe(0);
     expect(pool.query).toHaveBeenCalledTimes(2);
+  });
+
+  it("rolls back when approved claim is no longer eligible", async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce(undefined) // BEGIN
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            claimId: 1,
+            discordUserId: "123",
+            playerId: 456,
+            reviewerDiscordUserId: "999"
+          }
+        ]
+      }) // UPDATE claim_requests
+      .mockResolvedValueOnce({
+        rows: [{ currentAllianceId: "999999", linkedElsewhere: false }]
+      }) // eligibility query
+      .mockResolvedValueOnce(undefined); // ROLLBACK
+
+    const release = vi.fn();
+    const pool = {
+      connect: vi.fn().mockResolvedValue({ query, release })
+    } as any;
+    const service = new VerificationService(pool, createLogger(), createConfig());
+
+    await expect(service.approveClaimAndUpsertLink(1, "999")).resolves.toBeNull();
+    expect(query).toHaveBeenLastCalledWith("ROLLBACK");
+    expect(release).toHaveBeenCalledTimes(1);
   });
 });

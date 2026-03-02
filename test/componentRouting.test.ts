@@ -175,4 +175,30 @@ describe("componentRouting", () => {
       selectedPlayerId: 1001
     });
   });
+
+  it("rejects non-integer select payloads", () => {
+    const allianceRoute = routeComponentInteraction({
+      customId: "verify_alliance_123_select",
+      controlType: "select",
+      actorDiscordUserId: "123",
+      channelId: "thread",
+      leadershipChannelId: "lead",
+      actorIsLeadership: false,
+      isVerificationThread: true,
+      selectedValues: ["530061.5"]
+    });
+    const playerRoute = routeComponentInteraction({
+      customId: "verify_member_123_530061_0_0",
+      controlType: "select",
+      actorDiscordUserId: "123",
+      channelId: "thread",
+      leadershipChannelId: "lead",
+      actorIsLeadership: false,
+      isVerificationThread: true,
+      selectedValues: ["-1"]
+    });
+
+    expect(allianceRoute).toEqual({ type: "error", message: "Invalid alliance selection." });
+    expect(playerRoute).toEqual({ type: "error", message: "Invalid player selection." });
+  });
 });

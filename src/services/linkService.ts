@@ -1,11 +1,22 @@
 import type { Pool } from "pg";
+import type { AppConfig } from "../config.js";
 import type { AppLogger } from "../logger.js";
 
+export type PlayerNameResolution =
+  | { status: "resolved"; player: { playerId: number; playerName: string } }
+  | { status: "not_found" }
+  | { status: "ambiguous"; candidates: Array<{ playerId: number; playerName: string }> };
+
 export class LinkService {
+  private readonly trackedAllianceIds: Set<number>;
+
   constructor(
     private readonly pool: Pool,
+    private readonly config: AppConfig,
     private readonly logger: AppLogger
-  ) {}
+  ) {
+    this.trackedAllianceIds = new Set(this.config.gge.syncAllianceIds);
+  }
 
   async linkPlayerToDiscordUser(playerId: number, discordUserId: string, actorDiscordUserId: string) {
     await this.pool.query(
@@ -38,16 +49,59 @@ export class LinkService {
     return existing.rows.map((row) => row.discord_user_id);
   }
 
-  async resolvePlayerByName(playerName: string): Promise<{ playerId: number; playerName: string } | null> {
-    const result = await this.pool.query<{ playerId: number; playerName: string }>(
+  async resolvePlayerByName(playerName: string): Promise<PlayerNameResolution> {
+    const result = await this.pool.query<{
+      playerId: number;
+      playerName: string;
+      currentAllianceId: number | string | null;
+    }>(
       `
-      SELECT id AS "playerId", current_name AS "playerName"
+      SELECT
+        id AS "playerId",
+        current_name AS "playerName",
+        current_alliance_id AS "currentAllianceId"
       FROM players
       WHERE LOWER(current_name) = LOWER($1)
-      LIMIT 1
+      ORDER BY last_seen_at DESC NULLS LAST, id DESC
+      LIMIT 25
       `,
       [playerName]
     );
-    return result.rows[0] ?? null;
+
+    if (result.rows.length === 0) {
+      return { status: "not_found" };
+    }
+
+    const tracked = result.rows.filter((row) => {
+      if (row.currentAllianceId === null) {
+        return false;
+      }
+      const allianceId = Number(row.currentAllianceId);
+      return Number.isFinite(allianceId) && this.trackedAllianceIds.has(allianceId);
+    });
+    if (tracked.length === 1) {
+      return {
+        status: "resolved",
+        player: { playerId: tracked[0].playerId, playerName: tracked[0].playerName }
+      };
+    }
+    if (tracked.length > 1) {
+      return {
+        status: "ambiguous",
+        candidates: tracked.slice(0, 5).map((row) => ({ playerId: row.playerId, playerName: row.playerName }))
+      };
+    }
+
+    if (result.rows.length === 1) {
+      return {
+        status: "resolved",
+        player: { playerId: result.rows[0].playerId, playerName: result.rows[0].playerName }
+      };
+    }
+
+    return {
+      status: "ambiguous",
+      candidates: result.rows.slice(0, 5).map((row) => ({ playerId: row.playerId, playerName: row.playerName }))
+    };
   }
 }

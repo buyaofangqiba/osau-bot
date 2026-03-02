@@ -5,14 +5,15 @@ import type { AppLogger } from "../logger.js";
 
 interface LinkedMemberState {
   discordUserId: string;
-  playerId: number;
-  currentAllianceId: number | null;
-  currentAllianceRank: number | null;
+  playerId: number | string;
+  currentAllianceId: number | string | null;
+  currentAllianceRank: number | string | null;
 }
 
 export class DiscordRoleService {
   private readonly rankRoleByCode: Record<number, string>;
   private readonly groupRoleIds: Set<string>;
+  private readonly allianceGroupRoleById: Map<number, string>;
 
   constructor(
     private readonly pool: Pool,
@@ -32,11 +33,13 @@ export class DiscordRoleService {
       8: this.config.roleIds.member,
       9: this.config.roleIds.novice
     };
+    this.allianceGroupRoleById = new Map(
+      Object.entries(this.config.roleIds.allianceById).map(([allianceId, roleId]) => [Number(allianceId), roleId])
+    );
     this.groupRoleIds = new Set([
       this.config.roleIds.visitor,
-      this.config.roleIds.allianceDarkWarriors,
-      this.config.roleIds.allianceLaMuerte,
-      this.config.roleIds.alumni
+      this.config.roleIds.alumni,
+      ...this.allianceGroupRoleById.values()
     ]);
   }
 
@@ -52,7 +55,7 @@ export class DiscordRoleService {
 
     let updatedCount = 0;
     for (const state of states) {
-      const member = await guild.members.fetch(state.discordUserId).catch(() => null);
+      const member = await guild.members.fetch({ user: state.discordUserId, force: true }).catch(() => null);
       if (!member) {
         continue;
       }
@@ -64,7 +67,7 @@ export class DiscordRoleService {
 
   async reconcileDiscordUser(discordUserId: string) {
     const guild = await this.client.guilds.fetch(this.config.discord.guildId);
-    const member = await guild.members.fetch(discordUserId).catch(() => null);
+    const member = await guild.members.fetch({ user: discordUserId, force: true }).catch(() => null);
     if (!member) {
       return;
     }
@@ -111,11 +114,11 @@ export class DiscordRoleService {
     if (!linked) {
       return this.config.roleIds.visitor;
     }
-    if (allianceId === 530061) {
-      return this.config.roleIds.allianceDarkWarriors;
-    }
-    if (allianceId === 10061) {
-      return this.config.roleIds.allianceLaMuerte;
+    if (allianceId !== null) {
+      const mapped = this.allianceGroupRoleById.get(allianceId);
+      if (mapped) {
+        return mapped;
+      }
     }
     return this.config.roleIds.alumni;
   }
@@ -128,11 +131,10 @@ export class DiscordRoleService {
   }
 
   private async applyMemberRoles(member: GuildMember, linkedState: LinkedMemberState | null) {
-    const targetGroupRoleId = this.resolveGroupRoleId(linkedState?.currentAllianceId ?? null, Boolean(linkedState));
-    const targetRankRoleId = this.resolveRankRoleId(
-      linkedState?.currentAllianceRank ?? null,
-      linkedState?.currentAllianceId ?? null
-    );
+    const allianceId = this.toNullableNumber(linkedState?.currentAllianceId ?? null);
+    const rankCode = this.toNullableNumber(linkedState?.currentAllianceRank ?? null);
+    const targetGroupRoleId = this.resolveGroupRoleId(allianceId, Boolean(linkedState));
+    const targetRankRoleId = this.resolveRankRoleId(rankCode, allianceId);
     const rankRoleIds = new Set(Object.values(this.rankRoleByCode));
 
     const currentRoleIds = new Set(member.roles.cache.keys());
@@ -168,6 +170,10 @@ export class DiscordRoleService {
       {
         discordUserId: member.id,
         linked: Boolean(linkedState),
+        playerId: this.toNullableNumber(linkedState?.playerId ?? null),
+        currentAllianceId: allianceId,
+        currentAllianceRank: rankCode,
+        currentRoleIds: Array.from(currentRoleIds),
         targetGroupRoleId,
         targetRankRoleId,
         rolesToRemove,
@@ -175,5 +181,13 @@ export class DiscordRoleService {
       },
       "Reconciled Discord roles for member"
     );
+  }
+
+  private toNullableNumber(value: number | string | null): number | null {
+    if (value === null) {
+      return null;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
   }
 }

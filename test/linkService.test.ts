@@ -9,12 +9,20 @@ function createLogger() {
   } as any;
 }
 
+function createConfig() {
+  return {
+    gge: {
+      syncAllianceIds: [530061, 10061]
+    }
+  } as any;
+}
+
 describe("LinkService", () => {
   it("links player to discord user via upsert", async () => {
     const pool = {
       query: vi.fn().mockResolvedValue({})
     } as any;
-    const service = new LinkService(pool, createLogger());
+    const service = new LinkService(pool, createConfig(), createLogger());
 
     await service.linkPlayerToDiscordUser(1001, "123", "999");
 
@@ -30,7 +38,7 @@ describe("LinkService", () => {
         .mockResolvedValueOnce({ rows: [{ discord_user_id: "u1" }, { discord_user_id: "u2" }] })
         .mockResolvedValueOnce({})
     } as any;
-    const service = new LinkService(pool, createLogger());
+    const service = new LinkService(pool, createConfig(), createLogger());
 
     const unlinkedUsers = await service.unlinkByPlayer(1001, "999");
 
@@ -41,12 +49,58 @@ describe("LinkService", () => {
 
   it("resolves player by case-insensitive name", async () => {
     const pool = {
-      query: vi.fn().mockResolvedValue({ rows: [{ playerId: 1001, playerName: "Alpha" }] })
+      query: vi.fn().mockResolvedValue({
+        rows: [{ playerId: 1001, playerName: "Alpha", currentAllianceId: 530061 }]
+      })
     } as any;
-    const service = new LinkService(pool, createLogger());
+    const service = new LinkService(pool, createConfig(), createLogger());
 
     const result = await service.resolvePlayerByName("alpha");
 
-    expect(result).toEqual({ playerId: 1001, playerName: "Alpha" });
+    expect(result).toEqual({
+      status: "resolved",
+      player: { playerId: 1001, playerName: "Alpha" }
+    });
+  });
+
+  it("returns ambiguous when multiple tracked players share a name", async () => {
+    const pool = {
+      query: vi.fn().mockResolvedValue({
+        rows: [
+          { playerId: 1001, playerName: "Alpha", currentAllianceId: 530061 },
+          { playerId: 1002, playerName: "Alpha", currentAllianceId: 10061 }
+        ]
+      })
+    } as any;
+    const service = new LinkService(pool, createConfig(), createLogger());
+
+    const result = await service.resolvePlayerByName("alpha");
+
+    expect(result).toEqual({
+      status: "ambiguous",
+      candidates: [
+        { playerId: 1001, playerName: "Alpha" },
+        { playerId: 1002, playerName: "Alpha" }
+      ]
+    });
+  });
+
+  it("prefers the single tracked candidate when name matches tracked and untracked players", async () => {
+    const pool = {
+      query: vi.fn().mockResolvedValue({
+        rows: [
+          { playerId: 2001, playerName: "Alpha", currentAllianceId: null },
+          { playerId: 1001, playerName: "Alpha", currentAllianceId: "530061" }
+        ]
+      })
+    } as any;
+    const service = new LinkService(pool, createConfig(), createLogger());
+
+    const result = await service.resolvePlayerByName("alpha");
+
+    expect(result).toEqual({
+      status: "resolved",
+      player: { playerId: 1001, playerName: "Alpha" }
+    });
   });
 });

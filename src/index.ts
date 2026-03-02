@@ -17,6 +17,23 @@ async function main() {
   const logger = createLogger(config);
   const dbPool = createDbPool(config);
   const ggeClient = new GgeClient(config.gge);
+  const trackedAlliances = await Promise.all(
+    config.gge.syncAllianceIds.map(async (allianceId) => {
+      try {
+        const alliance = await ggeClient.getAllianceById(allianceId);
+        return {
+          id: allianceId,
+          name: alliance.alliance_name?.trim() || `Alliance ${allianceId}`
+        };
+      } catch (error) {
+        logger.warn({ error, allianceId }, "Failed to load alliance metadata from API; using fallback label");
+        return {
+          id: allianceId,
+          name: `Alliance ${allianceId}`
+        };
+      }
+    })
+  );
 
   const schemaCheck = await dbPool.query<{ exists: string | null }>(
     `SELECT to_regclass('public.discord_links') AS "exists"`
@@ -27,8 +44,8 @@ async function main() {
     );
   }
 
-  const verificationService = new VerificationService(dbPool, logger);
-  const linkService = new LinkService(dbPool, logger);
+  const verificationService = new VerificationService(dbPool, logger, config);
+  const linkService = new LinkService(dbPool, config, logger);
   const auditService = new AuditService(dbPool);
   let roleService!: DiscordRoleService;
   let syncService!: SyncService;
@@ -52,10 +69,15 @@ async function main() {
     onManualSync: async () => syncService.runFullSync("manual"),
     onManualSyncByActor: async (actorDiscordUserId) => runManualSyncAndLog(actorDiscordUserId),
     onLinkSet: async (actorDiscordUserId, playerName, targetDiscordUserId) => {
-      const player = await linkService.resolvePlayerByName(playerName);
-      if (!player) {
+      const resolution = await linkService.resolvePlayerByName(playerName);
+      if (resolution.status === "not_found") {
         return `Player '${playerName}' was not found in local player data. Run /sync now first.`;
       }
+      if (resolution.status === "ambiguous") {
+        const ids = resolution.candidates.map((candidate) => candidate.playerId).join(", ");
+        return `Multiple players named '${playerName}' found (${ids}). Link by name is ambiguous; use a unique name.`;
+      }
+      const player = resolution.player;
       await linkService.linkPlayerToDiscordUser(player.playerId, targetDiscordUserId, actorDiscordUserId);
       await roleService.reconcileDiscordUser(targetDiscordUserId);
       await auditService.record("link.set", actorDiscordUserId, {
@@ -69,10 +91,15 @@ async function main() {
       return `Linked <@${targetDiscordUserId}> to ${player.playerName}.`;
     },
     onLinkRemove: async (actorDiscordUserId, playerName) => {
-      const player = await linkService.resolvePlayerByName(playerName);
-      if (!player) {
+      const resolution = await linkService.resolvePlayerByName(playerName);
+      if (resolution.status === "not_found") {
         return `Player '${playerName}' was not found in local player data.`;
       }
+      if (resolution.status === "ambiguous") {
+        const ids = resolution.candidates.map((candidate) => candidate.playerId).join(", ");
+        return `Multiple players named '${playerName}' found (${ids}). Remove by name is ambiguous; use a unique name.`;
+      }
+      const player = resolution.player;
       const unlinkedUsers = await linkService.unlinkByPlayer(player.playerId, actorDiscordUserId);
       for (const userId of unlinkedUsers) {
         await roleService.reconcileDiscordUser(userId);
@@ -139,7 +166,7 @@ async function main() {
       );
       return { discordUserId: denied.discordUserId };
     }
-  });
+  }, trackedAlliances);
 
   roleService = new DiscordRoleService(dbPool, discord.client, config, logger);
   techLogService = new TechAdminLogService(discord.client, config, logger);
